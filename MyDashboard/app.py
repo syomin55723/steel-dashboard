@@ -182,12 +182,38 @@ with st.sidebar:
 
     file_key = uploaded_file.name
 
-    def cascading_filter(col, cur_df, label):
-        if col not in cur_df.columns:
-            return []
-        opts = sorted(cur_df[col].dropna().astype(str).unique())
-        if not opts:
-            return []
+    FILTER_COLS = [
+        ('生產年月',     "🗓️ 生產年月"),
+        ('訂單號碼',     "📝 訂單號碼"),
+        ('訂單厚度',     "📏 訂單厚度"),
+        ('厚度識別',     "🔎 厚度識別"),
+        ('訂單寬度',     "↔️ 訂單寬度"),
+        ('熱軋材質',     "🪨 熱軋材質"),
+        ('產品規格代碼', "📋 產品規格代碼"),
+        ('原料製造廠商', "🏭 原料製造廠商"),
+        ('取板位置',     "📍 取板位置"),
+        ('鍍製別',       "🏷️ 鍍製別"),
+        ('上鍍層',       "🔩 上鍍層"),
+        ('用途中文說明', "📌 用途中文說明"),
+    ]
+
+    def _apply_filters_except(base_df, exclude_col=None):
+        """套用所有篩選條件，但排除指定欄位自己，實現雙向聯動"""
+        result = base_df.copy()
+        for col, _ in FILTER_COLS:
+            if col == exclude_col:
+                continue
+            k = f"filter_{file_key}_{col}"
+            vals = st.session_state.get(k, [])
+            if vals and col in result.columns:
+                result = result[result[col].astype(str).isin(vals)]
+        return result
+
+    for col, label in FILTER_COLS:
+        if col not in df.columns:
+            continue
+        option_df = _apply_filters_except(df, exclude_col=col)
+        opts = sorted(option_df[col].dropna().astype(str).unique())
         k = f"filter_{file_key}_{col}"
         if k in st.session_state:
             st.session_state[k] = [x for x in st.session_state[k] if x in opts]
@@ -196,45 +222,17 @@ with st.sidebar:
             f'margin-bottom:4px;margin-top:8px;">{label}</div>',
             unsafe_allow_html=True
         )
-        return st.multiselect("", options=opts, key=k,
-                              placeholder="ALL",
-                              label_visibility="collapsed")
+        st.multiselect("", options=opts, key=k, placeholder="ALL", label_visibility="collapsed")
 
-    f_month  = cascading_filter('生產年月',      df,    "🗓️ 生產年月")
-    df_f1 = df[df['生產年月'].astype(str).isin(f_month)] if f_month else df.copy()
+    st.markdown("<div style='margin-top:12px;'></div>", unsafe_allow_html=True)
+    if st.button("🗑️ 清除全部篩選", use_container_width=True):
+        for col, _ in FILTER_COLS:
+            k = f"filter_{file_key}_{col}"
+            if k in st.session_state:
+                st.session_state[k] = []
+        st.rerun()
 
-    f_order  = cascading_filter('訂單號碼',      df_f1, "📝 訂單號碼")
-    df_f2 = df_f1[df_f1['訂單號碼'].astype(str).isin(f_order)] if f_order else df_f1.copy()
-
-    f_thick  = cascading_filter('訂單厚度',      df_f2, "📏 訂單厚度")
-    df_f3 = df_f2[df_f2['訂單厚度'].astype(str).isin(f_thick)] if f_thick else df_f2.copy()
-
-    f_thick_id = cascading_filter('厚度識別',    df_f3, "🔎 厚度識別")
-    df_f3b = df_f3[df_f3['厚度識別'].astype(str).isin(f_thick_id)] if f_thick_id else df_f3.copy()
-
-    f_width  = cascading_filter('訂單寬度',      df_f3b, "↔️ 訂單寬度")
-    df_f4 = df_f3b[df_f3b['訂單寬度'].astype(str).isin(f_width)] if f_width else df_f3b.copy()
-
-    f_mat    = cascading_filter('熱軋材質',      df_f4, "🪨 熱軋材質")
-    df_f5 = df_f4[df_f4['熱軋材質'].astype(str).isin(f_mat)] if f_mat else df_f4.copy()
-
-    f_spec   = cascading_filter('產品規格代碼',  df_f5, "📋 產品規格代碼")
-    df_f6 = df_f5[df_f5['產品規格代碼'].astype(str).isin(f_spec)] if f_spec else df_f5.copy()
-
-    f_maker  = cascading_filter('原料製造廠商',  df_f6, "🏭 原料製造廠商")
-    df_f7 = df_f6[df_f6['原料製造廠商'].astype(str).isin(f_maker)] if f_maker else df_f6.copy()
-
-    f_plate  = cascading_filter('取板位置',      df_f7, "📍 取板位置")
-    df_f8 = df_f7[df_f7['取板位置'].astype(str).isin(f_plate)] if f_plate else df_f7.copy()
-
-    f_coat_type = cascading_filter('鍍製別',     df_f8, "🏷️ 鍍製別")
-    df_f9 = df_f8[df_f8['鍍製別'].astype(str).isin(f_coat_type)] if f_coat_type else df_f8.copy()
-
-    f_coat   = cascading_filter('上鍍層',        df_f9, "🔩 上鍍層")
-    df_f10 = df_f9[df_f9['上鍍層'].astype(str).isin(f_coat)] if f_coat else df_f9.copy()
-
-    f_usage  = cascading_filter('用途中文說明',  df_f10, "📌 用途中文說明")
-    filtered_df = df_f10[df_f10['用途中文說明'].astype(str).isin(f_usage)] if f_usage else df_f10.copy()
+    filtered_df = _apply_filters_except(df)
 
 if filtered_df.empty:
     st.warning("⚠️ 目前篩選條件下沒有找到任何數據，請放寬左側的篩選條件！")
@@ -476,12 +474,48 @@ with tab1:
     if _sel_pts_key not in st.session_state:
         st.session_state[_sel_pts_key] = set()
 
+    def detect_spc_violations(values, avg, std):
+        """Western Electric 失控規則偵測，回傳 {index: [規則描述]}"""
+        if std == 0 or len(values) < 2:
+            return {}
+        ucl_d = avg + 3 * std
+        lcl_d = avg - 3 * std
+        violations = {}
+        for i, v in enumerate(values):
+            msgs = []
+            if v > ucl_d or v < lcl_d:
+                msgs.append("Rule 1：超過 ±3σ 管制限")
+            if i >= 7:
+                seg = values[i-7:i+1]
+                if all(x > avg for x in seg) or all(x < avg for x in seg):
+                    msgs.append("Rule 2：連續 8 點在均值同側")
+            if i >= 5:
+                seg = values[i-5:i+1]
+                if all(seg[j] < seg[j+1] for j in range(5)) or \
+                   all(seg[j] > seg[j+1] for j in range(5)):
+                    msgs.append("Rule 3：連續 6 點單調趨勢")
+            if msgs:
+                violations[i] = msgs
+        return violations
+
     # ── 單一 Fragment：月份按鈕 + 建圖 + 圖表渲染全部在同一個 fragment ──
     # 按月份按鈕 → on_click 更新 session_state → 觸發 fragment 級別 rerun
     # fragment 內重新讀取 session_state 並重建圖表，uirevision 確保 zoom 不重置
     @st.fragment
     def _spc_section():
         import copy
+
+        # ── Zone / UCL 開關（先於建圖讀取，確保圖形正確條件化）──
+        _zones_key = "spc_zones_" + _sel_pts_key
+        _ucl_key   = "spc_ucl_"   + _sel_pts_key
+        show_zones = st.session_state.get(_zones_key, True)
+        show_ucl   = st.session_state.get(_ucl_key,   True)
+
+        # ── UCL / LCL 管制限計算 ──────────────────────
+        ucl_val = avg_val + 3 * std_val
+        lcl_val = avg_val - 3 * std_val
+        sig1    = std_val
+        sig2    = 2 * std_val
 
         # ── 月份切換按鈕 ──────────────────────────────
         def _set_hl(month, key):
@@ -573,6 +607,19 @@ with tab1:
                     customdata=ab_custom, hovertemplate=ab_hover
                 ))
 
+        # ── Zone 帶狀底色（±1σ / ±2σ / ±3σ）──────────
+        if show_zones:
+            fig_line.add_hrect(y0=avg_val-sig1, y1=avg_val+sig1,
+                               fillcolor="rgba(16,185,129,0.08)", line_width=0, layer="below")
+            fig_line.add_hrect(y0=avg_val+sig1, y1=avg_val+sig2,
+                               fillcolor="rgba(245,158,11,0.06)", line_width=0, layer="below")
+            fig_line.add_hrect(y0=avg_val-sig2, y1=avg_val-sig1,
+                               fillcolor="rgba(245,158,11,0.06)", line_width=0, layer="below")
+            fig_line.add_hrect(y0=avg_val+sig2, y1=ucl_val,
+                               fillcolor="rgba(239,68,68,0.06)", line_width=0, layer="below")
+            fig_line.add_hrect(y0=lcl_val,      y1=avg_val-sig2,
+                               fillcolor="rgba(239,68,68,0.06)", line_width=0, layer="below")
+
         # ── 管制帶背景 & 規格線 ──────────────────────
         fig_line.add_hrect(y0=lsl2, y1=usl2, fillcolor="rgba(14,165,233,0.04)", line_width=0)
 
@@ -594,6 +641,16 @@ with tab1:
                                annotation_text="LSL  " + f"{lsl2:.3f}",
                                annotation_position="bottom right",
                                annotation_font=dict(color=CHART_UCL, size=13))
+
+        if show_ucl:
+            fig_line.add_hline(y=ucl_val, line_dash="dash", line_color="#f97316", line_width=2,
+                               annotation_text="UCL  " + f"{ucl_val:.3f}",
+                               annotation_position="top left",
+                               annotation_font=dict(color="#f97316", size=12))
+            fig_line.add_hline(y=lcl_val, line_dash="dash", line_color="#f97316", line_width=2,
+                               annotation_text="LCL  " + f"{lcl_val:.3f}",
+                               annotation_position="bottom left",
+                               annotation_font=dict(color="#f97316", size=12))
 
         fig_line.update_xaxes(showticklabels=False,
                               title_text="生產順序（依照時間 / 鋼捲號碼）",
@@ -619,11 +676,13 @@ with tab1:
 
         # ── 控制列 ────────────────────────────────────
         sel_pts: set = st.session_state.get(_sel_pts_key, set())
-        _c1, _c2, _ = st.columns([2, 2, 6])
+        _c1, _c2, _c3, _c4, _ = st.columns([2, 2, 2, 2, 2])
         show_all = _c1.toggle("🔢 全部顯示數值", value=False, key=_show_all_key)
         if _c2.button("🗑️ 清除已選標籤", key="clr_" + _sel_pts_key):
             st.session_state[_sel_pts_key] = set()
             sel_pts = set()
+        _c3.toggle("📊 管制帶", value=show_zones, key=_zones_key)
+        _c4.toggle("📏 UCL/LCL", value=show_ucl, key=_ucl_key)
 
         # ── 加入 annotation（只加需要顯示的點）──────
         fig = copy.deepcopy(fig_line)
@@ -641,6 +700,28 @@ with tab1:
                     bgcolor="rgba(255,255,255,0.85)",
                     bordercolor="#94a3b8", borderwidth=1, borderpad=2,
                 )
+
+        # ── SPC 失控規則偵測 & 標示 ──────────────────
+        _violations = {}
+        if show_ucl and x_col:
+            _vals = plot_df[selected_param].tolist()
+            _violations = detect_spc_violations(_vals, avg_val, std_val)
+            if _violations:
+                _viol_idx = [i for i in _violations if i < len(plot_df)]
+                _viol_x   = [plot_df[x_col].iloc[i] for i in _viol_idx]
+                _viol_y   = [_vals[i] for i in _viol_idx]
+                _viol_tip = ["<br>".join(_violations[i]) for i in _viol_idx]
+                fig.add_trace(go.Scatter(
+                    x=_viol_x, y=_viol_y, mode="markers",
+                    name="⚠ SPC 失控",
+                    marker=dict(color="#dc2626", size=16, symbol="x-thin",
+                                line=dict(width=3, color="#dc2626")),
+                    customdata=_viol_tip,
+                    hovertemplate=(
+                        "<b>⚠ SPC 失控</b><br>鋼捲：%{x}<br>值：%{y:.3f}"
+                        "<br>%{customdata}<extra></extra>"
+                    ),
+                ))
 
         # ── 渲染圖表；on_select="rerun" → 點擊時只重跑此 fragment ──
         event = st.plotly_chart(
@@ -669,6 +750,12 @@ with tab1:
             st.caption(
                 f"💡 已標註 {len(sel_pts)} 個點位　｜　"
                 "再次點擊同一點可取消　｜　按「清除已選標籤」全部移除"
+            )
+
+        if show_ucl and _violations:
+            st.warning(
+                f"⚠️ SPC 失控偵測：共 **{len(_violations)}** 個資料點違反管制規則（紅 ✕ 標示）。"
+                "　Rule 1 = 超過±3σ　｜　Rule 2 = 連續8點同側　｜　Rule 3 = 連續6點趨勢"
             )
 
     _spc_section()
