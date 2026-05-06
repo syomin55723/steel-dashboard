@@ -169,72 +169,376 @@ if '試驗等級' in df.columns:
 else:
     df["比對群組"] = "全批次數據"
 
-# ── 側邊欄篩選器 ─────────────────────────────────────
-with st.sidebar:
+# ── Tableau Style 雙向聯動篩選器 + 視覺化 Filter Bar ─────────────────────────────
+FILTERS = [
+    ('生產年月', "🗓️ 生產年月"),
+    ('訂單號碼', "📝 訂單號碼"),
+    ('訂單厚度', "📏 訂單厚度"),
+    ('厚度識別', "🔎 厚度識別"),
+    ('訂單寬度', "↔️ 訂單寬度"),
+    ('熱軋材質', "🪨 熱軋材質"),
+    ('產品規格代碼', "📋 產品規格代碼"),
+    ('原料製造廠商', "🏭 原料製造廠商"),
+    ('取板位置', "📍 取板位置"),
+    ('鍍製別', "🏷️ 鍍製別"),
+    ('上鍍層', "🔩 上鍍層"),
+    ('用途中文說明', "📌 用途中文說明"),
+]
+
+FILTER_ICON = {
+    '生產年月': '🗓️',
+    '訂單號碼': '📝',
+    '訂單厚度': '📏',
+    '厚度識別': '🔎',
+    '訂單寬度': '↔️',
+    '熱軋材質': '🪨',
+    '產品規格代碼': '📋',
+    '原料製造廠商': '🏭',
+    '取板位置': '📍',
+    '鍍製別': '🏷️',
+    '上鍍層': '🔩',
+    '用途中文說明': '📌',
+}
+
+file_key = uploaded_file.name
+
+
+def filter_key(col):
+    return f"filter_{file_key}_{col}"
+
+
+def apply_all_filters(base_df, selections, exclude_col=None):
+    """
+    套用所有篩選條件。
+    exclude_col 用於計算某欄自己的 options 時，排除自己，達成雙向聯動。
+    """
+    out = base_df.copy()
+
+    for col, values in selections.items():
+        if exclude_col == col:
+            continue
+        if col not in out.columns:
+            continue
+        if values:
+            values = [str(v) for v in values]
+            out = out[out[col].astype(str).isin(values)]
+
+    return out
+
+
+def get_current_selections(base_df):
+    """
+    從 session_state 讀取目前所有篩選條件。
+    """
+    selections = {}
+
+    for col, _label in FILTERS:
+        if col not in base_df.columns:
+            continue
+
+        k = filter_key(col)
+        values = st.session_state.get(k, [])
+        selections[col] = [str(v) for v in values] if values else []
+
+    return selections
+
+
+def clear_all_filters():
+    """
+    清除全部篩選器。
+    注意：這個函式會被 st.button(on_click=...) 呼叫，避免 Streamlit widget key 已建立後被直接改值的錯誤。
+    """
+    for col, _label in FILTERS:
+        k = filter_key(col)
+        if k in st.session_state:
+            del st.session_state[k]
+
+
+def remove_single_filter_value(col, value):
+    """
+    移除單一 tag 條件。
+    注意：這個函式會被 st.button(on_click=...) 呼叫，避免 Streamlit widget key 已建立後被直接改值的錯誤。
+    """
+    k = filter_key(col)
+    if k in st.session_state:
+        st.session_state[k] = [x for x in st.session_state[k] if str(x) != str(value)]
+
+
+def render_filter_bar(selections, total_rows, filtered_rows):
+    """
+    Tableau / Power BI 風格的上方視覺化篩選條。
+    """
+    active_filters = {
+        col: values for col, values in selections.items()
+        if values
+    }
+
     st.markdown("""
-    <div style="margin-bottom:8px;">
-      <div style="font-size:16px;font-weight:700;color:#0f172a;margin-bottom:4px;">
-        🎯 篩選器
+    <style>
+    .aegis-filter-panel {
+        position: relative;
+        background: linear-gradient(135deg, rgba(255,255,255,0.98), rgba(240,249,255,0.94));
+        border: 1px solid rgba(186,230,253,0.95);
+        box-shadow: 0 14px 34px rgba(15,23,42,0.08);
+        border-radius: 18px;
+        padding: 16px 18px;
+        margin: 0 0 14px 0;
+        overflow: hidden;
+        animation: aegisFadeUp .42s ease both;
+    }
+
+    .aegis-filter-panel::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(circle at top left, rgba(14,165,233,0.20), transparent 34%),
+          radial-gradient(circle at bottom right, rgba(16,185,129,0.11), transparent 32%);
+        pointer-events: none;
+    }
+
+    .aegis-filter-head {
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 4px;
+    }
+
+    .aegis-filter-title {
+        font-size: 15px;
+        font-weight: 900;
+        color: #0f172a;
+        letter-spacing: .4px;
+    }
+
+    .aegis-filter-sub {
+        font-size: 12px;
+        color: #64748b;
+        margin-top: 3px;
+    }
+
+    .aegis-filter-count {
+        background: rgba(14,165,233,0.11);
+        color: #0369a1;
+        border: 1px solid rgba(14,165,233,0.26);
+        border-radius: 999px;
+        padding: 7px 12px;
+        font-size: 12px;
+        font-weight: 900;
+        white-space: nowrap;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.65);
+    }
+
+    .aegis-empty-filter {
+        background: rgba(255,255,255,0.76);
+        border: 1px dashed #cbd5e1;
+        border-radius: 14px;
+        padding: 12px 14px;
+        color: #64748b;
+        font-size: 13px;
+        margin-bottom: 14px;
+        animation: aegisFadeUp .42s ease both;
+    }
+
+    @keyframes aegisFadeUp {
+        from { opacity: 0; transform: translateY(10px); }
+        to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* 讓 Streamlit 按鈕更像 BI 工具的膠囊 tag。會同步美化月份按鈕與清除按鈕。 */
+    div[data-testid="stButton"] > button {
+        border-radius: 999px;
+        border: 1px solid #bae6fd;
+        background: linear-gradient(135deg, #ffffff, #f0f9ff);
+        color: #0f172a;
+        font-size: 12px;
+        font-weight: 800;
+        padding: 0.40rem 0.78rem;
+        box-shadow: 0 5px 14px rgba(14,165,233,0.11);
+        transition: all .18s ease;
+    }
+
+    div[data-testid="stButton"] > button:hover {
+        border-color: #38bdf8;
+        color: #0369a1;
+        transform: translateY(-2px);
+        box-shadow: 0 10px 22px rgba(14,165,233,0.22);
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.markdown(f"""
+    <div class="aegis-filter-panel">
+      <div class="aegis-filter-head">
+        <div>
+          <div class="aegis-filter-title">🔎 目前篩選條件</div>
+          <div class="aegis-filter-sub">點擊條件膠囊可單獨移除，或使用清除全部重置分析範圍</div>
+        </div>
+        <div class="aegis-filter-count">
+          {filtered_rows:,} / {total_rows:,} 筆
+        </div>
       </div>
-      <div style="font-size:13px;color:#64748b;">💡 條件即時連動，支援跨月多選</div>
     </div>
     """, unsafe_allow_html=True)
 
-    file_key = uploaded_file.name
+    if not active_filters:
+        st.markdown("""
+        <div class="aegis-empty-filter">
+            目前未套用任何篩選條件，顯示完整資料集。
+        </div>
+        """, unsafe_allow_html=True)
+        return
 
-    def cascading_filter(col, cur_df, label):
-        if col not in cur_df.columns:
-            return []
-        opts = sorted(cur_df[col].dropna().astype(str).unique())
-        if not opts:
-            return []
-        k = f"filter_{file_key}_{col}"
-        if k in st.session_state:
-            st.session_state[k] = [x for x in st.session_state[k] if x in opts]
-        st.markdown(
-            f'<div style="font-size:14px;font-weight:600;color:#1e293b;'
-            f'margin-bottom:4px;margin-top:8px;">{label}</div>',
-            unsafe_allow_html=True
+    pill_items = []
+    for col, values in active_filters.items():
+        icon = FILTER_ICON.get(col, "🔹")
+        for value in values:
+            pill_items.append((col, value, icon))
+
+    # 一列最多 4 個膠囊 tag，避免太擠
+    for start in range(0, len(pill_items), 4):
+        row_items = pill_items[start:start + 4]
+        cols = st.columns(len(row_items))
+
+        for i, (col, value, icon) in enumerate(row_items):
+            safe_value = str(value).replace(" ", "_").replace("/", "_")
+            safe_key = f"rm_{file_key}_{col}_{start}_{i}_{safe_value}"
+            label = f"{icon} {col}: {value}  ✕"
+
+            cols[i].button(
+                label,
+                key=safe_key,
+                use_container_width=True,
+                on_click=remove_single_filter_value,
+                args=(col, value),
+            )
+
+    clear_col, info_col = st.columns([1.35, 6])
+
+    with clear_col:
+        st.button(
+            "🧹 清除全部",
+            use_container_width=True,
+            key=f"clear_all_filters_{file_key}",
+            on_click=clear_all_filters,
         )
-        return st.multiselect("", options=opts, key=k,
-                              placeholder="ALL",
-                              label_visibility="collapsed")
 
-    f_month  = cascading_filter('生產年月',      df,    "🗓️ 生產年月")
-    df_f1 = df[df['生產年月'].astype(str).isin(f_month)] if f_month else df.copy()
+    with info_col:
+        st.caption(f"已套用 {len(active_filters)} 個欄位條件，共 {len(pill_items)} 個篩選值。")
 
-    f_order  = cascading_filter('訂單號碼',      df_f1, "📝 訂單號碼")
-    df_f2 = df_f1[df_f1['訂單號碼'].astype(str).isin(f_order)] if f_order else df_f1.copy()
 
-    f_thick  = cascading_filter('訂單厚度',      df_f2, "📏 訂單厚度")
-    df_f3 = df_f2[df_f2['訂單厚度'].astype(str).isin(f_thick)] if f_thick else df_f2.copy()
+# ── 篩選欄位標準化：只針對篩選欄位轉字串，避免數值分析欄位被轉壞 ─────────────
+for col, _label in FILTERS:
+    if col in df.columns:
+        df[col] = df[col].astype(str).str.strip()
 
-    f_thick_id = cascading_filter('厚度識別',    df_f3, "🔎 厚度識別")
-    df_f3b = df_f3[df_f3['厚度識別'].astype(str).isin(f_thick_id)] if f_thick_id else df_f3.copy()
 
-    f_width  = cascading_filter('訂單寬度',      df_f3b, "↔️ 訂單寬度")
-    df_f4 = df_f3b[df_f3b['訂單寬度'].astype(str).isin(f_width)] if f_width else df_f3b.copy()
+# ── 側邊欄篩選器：真正雙向聯動 ─────────────────────────────
+with st.sidebar:
+    st.markdown("""
+    <div style="margin-bottom:10px;">
+      <div style="font-size:16px;font-weight:800;color:#0f172a;margin-bottom:4px;">
+        🎯 智能篩選器
+      </div>
+      <div style="font-size:13px;color:#64748b;line-height:1.5;">
+        任一條件都會反向影響其他欄位，支援 Tableau 式聯動
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    f_mat    = cascading_filter('熱軋材質',      df_f4, "🪨 熱軋材質")
-    df_f5 = df_f4[df_f4['熱軋材質'].astype(str).isin(f_mat)] if f_mat else df_f4.copy()
+    selections = get_current_selections(df)
 
-    f_spec   = cascading_filter('產品規格代碼',  df_f5, "📋 產品規格代碼")
-    df_f6 = df_f5[df_f5['產品規格代碼'].astype(str).isin(f_spec)] if f_spec else df_f5.copy()
+    for col, label in FILTERS:
+        if col not in df.columns:
+            continue
 
-    f_maker  = cascading_filter('原料製造廠商',  df_f6, "🏭 原料製造廠商")
-    df_f7 = df_f6[df_f6['原料製造廠商'].astype(str).isin(f_maker)] if f_maker else df_f6.copy()
+        # 計算該欄 options 時，套用其他欄位條件，但排除自己
+        option_df = apply_all_filters(df, selections, exclude_col=col)
+        opts = sorted(option_df[col].dropna().astype(str).unique())
 
-    f_plate  = cascading_filter('取板位置',      df_f7, "📍 取板位置")
-    df_f8 = df_f7[df_f7['取板位置'].astype(str).isin(f_plate)] if f_plate else df_f7.copy()
+        k = filter_key(col)
 
-    f_coat_type = cascading_filter('鍍製別',     df_f8, "🏷️ 鍍製別")
-    df_f9 = df_f8[df_f8['鍍製別'].astype(str).isin(f_coat_type)] if f_coat_type else df_f8.copy()
+        # 清除已失效的舊選項
+        if k in st.session_state:
+            valid_values = set(opts)
+            st.session_state[k] = [
+                x for x in st.session_state[k]
+                if str(x) in valid_values
+            ]
 
-    f_coat   = cascading_filter('上鍍層',        df_f9, "🔩 上鍍層")
-    df_f10 = df_f9[df_f9['上鍍層'].astype(str).isin(f_coat)] if f_coat else df_f9.copy()
+        if not opts:
+            st.markdown(
+                f"""
+                <div style="font-size:14px;font-weight:700;color:#94a3b8;margin-top:10px;">
+                    {label}
+                </div>
+                <div style="font-size:12px;color:#ef4444;margin-bottom:6px;">
+                    無可用選項，請放寬其他條件
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            selections[col] = st.session_state.get(k, [])
+            continue
 
-    f_usage  = cascading_filter('用途中文說明',  df_f10, "📌 用途中文說明")
-    filtered_df = df_f10[df_f10['用途中文說明'].astype(str).isin(f_usage)] if f_usage else df_f10.copy()
+        st.markdown(
+            f"""
+            <div style="
+                font-size:14px;
+                font-weight:700;
+                color:#1e293b;
+                margin-bottom:4px;
+                margin-top:10px;
+            ">
+                {label}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        selected_values = st.multiselect(
+            "",
+            options=opts,
+            key=k,
+            placeholder=f"ALL｜可選 {len(opts)} 項",
+            label_visibility="collapsed",
+        )
+
+        selections[col] = [str(v) for v in selected_values] if selected_values else []
+
+    st.markdown("---")
+
+    _preview_df = apply_all_filters(df, selections)
+    _active_count = sum(1 for _col, _vals in selections.items() if _vals)
+
+    st.markdown(f"""
+    <div style="
+        background:linear-gradient(135deg,#ffffff,#f0f9ff);
+        border:1px solid #bae6fd;
+        border-radius:14px;
+        padding:14px 16px;
+        margin-top:4px;
+        box-shadow:0 8px 20px rgba(14,165,233,.10);
+    ">
+      <div style="font-size:12px;color:#64748b;font-weight:800;margin-bottom:5px;letter-spacing:.8px;">
+        FILTERED ROWS
+      </div>
+      <div style="font-size:28px;font-weight:950;color:#0ea5e9;line-height:1;">
+        {len(_preview_df):,}
+      </div>
+      <div style="font-size:12px;color:#64748b;margin-top:6px;">
+        原始資料 {len(df):,} 筆｜已套用 {_active_count} 個欄位
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# 最終篩選結果
+filtered_df = apply_all_filters(df, selections)
+
+# 主畫面上方顯示 Tableau Style Filter Bar
+render_filter_bar(selections, total_rows=len(df), filtered_rows=len(filtered_df))
 
 if filtered_df.empty:
     st.warning("⚠️ 目前篩選條件下沒有找到任何數據，請放寬左側的篩選條件！")
