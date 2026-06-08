@@ -6,20 +6,19 @@ import numpy as np
 import base64, os
 from theme import THEME_CSS, render_landing, show_loading, CHART_THEME
 
-st.set_page_config(page_title="AegisCore", layout="wide", page_icon="🌀", initial_sidebar_state="expanded")
+st.set_page_config(page_title="AegisCore", layout="wide", page_icon="👁️", initial_sidebar_state="expanded")
 st.markdown(THEME_CSS, unsafe_allow_html=True)
-
 
 # ── 全域圖表色盤 ──────────────────────────────────────────
 CHART_BG      = "#ffffff"
 CHART_GRID    = "#e2e8f0"
 CHART_TEXT    = "#1e293b"
 CHART_AXIS    = "#cbd5e1"
-CHART_AVG     = "#10b981"
-CHART_UCL     = "#ef4444"
-CHART_NORMAL  = "rgba(96,165,250,0.65)"
-CHART_OUTLIER = "rgba(239,68,68,0.70)"
-CHART_CURVE   = "#0ea5e9"
+CHART_AVG     = "#10b981"   # 翠綠：平均線
+CHART_UCL     = "#ef4444"   # 紅：管制上下限
+CHART_NORMAL  = "rgba(96,165,250,0.65)"   # 藍：直方圖正常範圍
+CHART_OUTLIER = "rgba(239,68,68,0.70)"    # 紅：規格外
+CHART_CURVE   = "#0ea5e9"   # 天藍：常態曲線
 
 # ══════════════════════════════════════════════════════
 #  資料讀取
@@ -129,17 +128,6 @@ with st.sidebar:
 #  未上傳：封面頁
 # ══════════════════════════════════════════════════════
 if uploaded_file is None:
-    # 清除所有分析相關 session state，避免取消上傳後版面殘留位移
-    _keys_to_clear = [k for k in st.session_state
-                      if k not in ("loaded_file_id",)  # 保留 file_id 供下次比對
-                      and any(k.startswith(p) for p in (
-                          "raw_df", "filter_", "param_", "spc_", "hl_", "clr_",
-                      ))]
-    for _k in _keys_to_clear:
-        del st.session_state[_k]
-    # loaded_file_id 也一併清除，確保重新上傳同名檔時會重新解析
-    st.session_state.pop("loaded_file_id", None)
-    st.session_state.pop("raw_df", None)
     render_landing()
     st.stop()
 
@@ -169,245 +157,70 @@ if '試驗等級' in df.columns:
 else:
     df["比對群組"] = "全批次數據"
 
-# ── Tableau Style 雙向聯動篩選器 + 視覺化 Filter Bar ─────────────────────────────
-FILTERS = [
-    ('生產年月', "🗓️ 生產年月"),
-    ('訂單號碼', "📝 訂單號碼"),
-    ('訂單厚度', "📏 訂單厚度"),
-    ('厚度識別', "🔎 厚度識別"),
-    ('訂單寬度', "↔️ 訂單寬度"),
-    ('熱軋材質', "🪨 熱軋材質"),
-    ('產品規格代碼', "📋 產品規格代碼"),
-    ('原料製造廠商', "🏭 原料製造廠商"),
-    ('取板位置', "📍 取板位置"),
-    ('鍍製別', "🏷️ 鍍製別"),
-    ('上鍍層', "🔩 上鍍層"),
-    ('用途中文說明', "📌 用途中文說明"),
-]
-
-FILTER_ICON = {
-    '生產年月': '🗓️',
-    '訂單號碼': '📝',
-    '訂單厚度': '📏',
-    '厚度識別': '🔎',
-    '訂單寬度': '↔️',
-    '熱軋材質': '🪨',
-    '產品規格代碼': '📋',
-    '原料製造廠商': '🏭',
-    '取板位置': '📍',
-    '鍍製別': '🏷️',
-    '上鍍層': '🔩',
-    '用途中文說明': '📌',
-}
-
-file_key = uploaded_file.name
-
-
-def filter_key(col):
-    return f"filter_{file_key}_{col}"
-
-
-def apply_all_filters(base_df, selections, exclude_col=None):
-    """
-    套用所有篩選條件。
-    exclude_col 用於計算某欄自己的 options 時，排除自己，達成雙向聯動。
-    """
-    out = base_df.copy()
-
-    for col, values in selections.items():
-        if exclude_col == col:
-            continue
-        if col not in out.columns:
-            continue
-        if values:
-            values = [str(v) for v in values]
-            out = out[out[col].astype(str).isin(values)]
-
-    return out
-
-
-def get_current_selections(base_df):
-    """
-    從 session_state 讀取目前所有篩選條件。
-    """
-    selections = {}
-
-    for col, _label in FILTERS:
-        if col not in base_df.columns:
-            continue
-
-        k = filter_key(col)
-        values = st.session_state.get(k, [])
-        selections[col] = [str(v) for v in values] if values else []
-
-    return selections
-
-
-def clear_all_filters():
-    """
-    清除全部篩選器。
-    注意：這個函式會被 st.button(on_click=...) 呼叫，避免 Streamlit widget key 已建立後被直接改值的錯誤。
-    """
-    for col, _label in FILTERS:
-        k = filter_key(col)
-        if k in st.session_state:
-            del st.session_state[k]
-
-
-def remove_single_filter_value(col, value):
-    """
-    移除單一 tag 條件。
-    注意：這個函式會被 st.button(on_click=...) 呼叫，避免 Streamlit widget key 已建立後被直接改值的錯誤。
-    """
-    k = filter_key(col)
-    if k in st.session_state:
-        st.session_state[k] = [x for x in st.session_state[k] if str(x) != str(value)]
-
-
-def render_analysis_status(selections, total_rows, filtered_rows):
-    """
-    精簡狀態列：只呈現目前分析範圍，不再佔用主畫面大面積。
-    篩選操作全部留在左側 sidebar。
-    """
-    active_fields = sum(1 for values in selections.values() if values)
-    active_values = sum(len(values) for values in selections.values() if values)
-    pct = (filtered_rows / total_rows * 100) if total_rows else 0
-
-    st.markdown(f"""
-    <div class="aegis-status-strip">
-      <div class="aegis-status-left">
-        <span class="aegis-status-dot"></span>
-        <span class="aegis-status-title">目前分析範圍</span>
-        <span class="aegis-status-muted">已篩選</span>
-        <span class="aegis-status-strong">{filtered_rows:,}</span>
-        <span class="aegis-status-muted">/ {total_rows:,} 筆</span>
-      </div>
-      <div class="aegis-status-right">
-        <span>{pct:.1f}% 資料</span>
-        <span>已套用 {active_fields} 個欄位</span>
-        <span>共 {active_values} 個篩選值</span>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-
-# ── 篩選欄位標準化：只針對篩選欄位轉字串，避免數值分析欄位被轉壞 ─────────────
-for col, _label in FILTERS:
-    if col in df.columns:
-        df[col] = df[col].astype(str).str.strip()
-
-
-# ── 側邊欄篩選器：真正雙向聯動 ─────────────────────────────
+# ── 側邊欄篩選器 ─────────────────────────────────────
 with st.sidebar:
     st.markdown("""
-    <div style="margin-bottom:10px;">
-      <div style="font-size:16px;font-weight:800;color:#0f172a;margin-bottom:4px;">
-        🎯 智能篩選器
+    <div style="margin-bottom:8px;">
+      <div style="font-size:16px;font-weight:700;color:#0f172a;margin-bottom:4px;">
+        🎯 篩選器
       </div>
-      <div style="font-size:13px;color:#64748b;line-height:1.5;">
-        任一條件都會反向影響其他欄位，支援 Tableau 式聯動
-      </div>
+      <div style="font-size:13px;color:#64748b;">💡 條件即時連動，支援跨月多選</div>
     </div>
     """, unsafe_allow_html=True)
 
-    st.button(
-        "🧹 清除全部篩選",
-        use_container_width=True,
-        key=f"sidebar_clear_all_filters_{file_key}",
-        on_click=clear_all_filters,
-    )
+    file_key = uploaded_file.name
 
-    selections = get_current_selections(df)
-
-    for col, label in FILTERS:
-        if col not in df.columns:
-            continue
-
-        # 計算該欄 options 時，套用其他欄位條件，但排除自己
-        option_df = apply_all_filters(df, selections, exclude_col=col)
-        opts = sorted(option_df[col].dropna().astype(str).unique())
-
-        k = filter_key(col)
-
-        # 清除已失效的舊選項
-        if k in st.session_state:
-            valid_values = set(opts)
-            st.session_state[k] = [
-                x for x in st.session_state[k]
-                if str(x) in valid_values
-            ]
-
+    def cascading_filter(col, cur_df, label):
+        if col not in cur_df.columns:
+            return []
+        opts = sorted(cur_df[col].dropna().astype(str).unique())
         if not opts:
-            st.markdown(
-                f"""
-                <div style="font-size:14px;font-weight:700;color:#94a3b8;margin-top:10px;">
-                    {label}
-                </div>
-                <div style="font-size:12px;color:#ef4444;margin-bottom:6px;">
-                    無可用選項，請放寬其他條件
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            selections[col] = st.session_state.get(k, [])
-            continue
-
+            return []
+        k = f"filter_{file_key}_{col}"
+        if k in st.session_state:
+            st.session_state[k] = [x for x in st.session_state[k] if x in opts]
+        # label 用 markdown 顯示，multiselect 本身隱藏 label
         st.markdown(
-            f"""
-            <div style="
-                font-size:14px;
-                font-weight:700;
-                color:#1e293b;
-                margin-bottom:4px;
-                margin-top:10px;
-            ">
-                {label}
-            </div>
-            """,
-            unsafe_allow_html=True,
+            f'<div style="font-size:14px;font-weight:600;color:#1e293b;'
+            f'margin-bottom:4px;margin-top:8px;">{label}</div>',
+            unsafe_allow_html=True
         )
+        return st.multiselect("", options=opts, key=k,
+                              placeholder="ALL",
+                              label_visibility="collapsed")
 
-        selected_values = st.multiselect(
-            "",
-            options=opts,
-            key=k,
-            placeholder=f"ALL｜可選 {len(opts)} 項",
-            label_visibility="collapsed",
-        )
+    f_month  = cascading_filter('生產年月',      df,    "🗓️ 生產年月")
+    df_f1 = df[df['生產年月'].astype(str).isin(f_month)] if f_month else df.copy()
 
-        selections[col] = [str(v) for v in selected_values] if selected_values else []
+    f_order  = cascading_filter('訂單號碼',      df_f1, "📝 訂單號碼")
+    df_f2 = df_f1[df_f1['訂單號碼'].astype(str).isin(f_order)] if f_order else df_f1.copy()
 
-    st.markdown("---")
+    f_thick  = cascading_filter('訂單厚度',      df_f2, "📏 訂單厚度")
+    df_f3 = df_f2[df_f2['訂單厚度'].astype(str).isin(f_thick)] if f_thick else df_f2.copy()
 
-    _preview_df = apply_all_filters(df, selections)
-    _active_count = sum(1 for _col, _vals in selections.items() if _vals)
+    f_width  = cascading_filter('訂單寬度',      df_f3, "↔️ 訂單寬度")
+    df_f4 = df_f3[df_f3['訂單寬度'].astype(str).isin(f_width)] if f_width else df_f3.copy()
 
-    st.markdown(f"""
-    <div style="
-        background:linear-gradient(135deg,#ffffff,#f0f9ff);
-        border:1px solid #bae6fd;
-        border-radius:14px;
-        padding:14px 16px;
-        margin-top:4px;
-        box-shadow:0 8px 20px rgba(14,165,233,.10);
-    ">
-      <div style="font-size:12px;color:#64748b;font-weight:800;margin-bottom:5px;letter-spacing:.8px;">
-        FILTERED ROWS
-      </div>
-      <div style="font-size:28px;font-weight:950;color:#0ea5e9;line-height:1;">
-        {len(_preview_df):,}
-      </div>
-      <div style="font-size:12px;color:#64748b;margin-top:6px;">
-        原始資料 {len(df):,} 筆｜已套用 {_active_count} 個欄位
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
+    f_mat    = cascading_filter('熱軋材質',      df_f4, "🪨 熱軋材質")
+    df_f5 = df_f4[df_f4['熱軋材質'].astype(str).isin(f_mat)] if f_mat else df_f4.copy()
 
-# 最終篩選結果
-filtered_df = apply_all_filters(df, selections)
+    f_spec   = cascading_filter('產品規格代碼',  df_f5, "📋 產品規格代碼")
+    df_f6 = df_f5[df_f5['產品規格代碼'].astype(str).isin(f_spec)] if f_spec else df_f5.copy()
 
-# 主畫面只保留精簡分析狀態列，避免與左側篩選器重複
-render_analysis_status(selections, total_rows=len(df), filtered_rows=len(filtered_df))
+    f_rthick = cascading_filter('原料厚度',      df_f6, "🔲 原料厚度")
+    df_f6b = df_f6[df_f6['原料厚度'].astype(str).isin(f_rthick)] if f_rthick else df_f6.copy()
+
+    f_maker  = cascading_filter('原料製造廠商',  df_f6b, "🏭 原料製造廠商")
+    df_f7 = df_f6b[df_f6b['原料製造廠商'].astype(str).isin(f_maker)] if f_maker else df_f6b.copy()
+
+    f_plate  = cascading_filter('取板位置',      df_f7, "📍 取板位置")
+    df_f8 = df_f7[df_f7['取板位置'].astype(str).isin(f_plate)] if f_plate else df_f7.copy()
+
+    f_coat   = cascading_filter('上鍍層',        df_f8, "🔩 上鍍層")
+    df_f9 = df_f8[df_f8['上鍍層'].astype(str).isin(f_coat)] if f_coat else df_f8.copy()
+
+    f_usage  = cascading_filter('用途中文說明',  df_f9, "📌 用途中文說明")
+    filtered_df = df_f9[df_f9['用途中文說明'].astype(str).isin(f_usage)] if f_usage else df_f9.copy()
 
 if filtered_df.empty:
     st.warning("⚠️ 目前篩選條件下沒有找到任何數據，請放寬左側的篩選條件！")
@@ -421,26 +234,9 @@ _EXCLUDE = {
     'NORTH_TOP_COAT_WEIGHT','CENTER_TOP_COAT_WEIGHT','SOUTH_TOP_COAT_WEIGHT',
     'NORTH_BACK_COAT_WEIGHT','CENTER_BACK_COAT_WEIGHT','SOUTH_BACK_COAT_WEIGHT',
     '訂單厚度','訂單寬度','原料厚度','原料寬度','投入厚度','投入寬度',
-    '投入重量','實測重量',
+    '投入重量','實測重量','實測厚度','實測寬度','實測長度',
     '開始時間','排程單號','結束時間','班次','產出內徑','上粗糙度','下粗糙度',
     '化成','切除米數','收捲方向','AIM符號','引帶號碼',
-    '下鍍層','鍍層量','藥劑代號[化驗用]','規範代碼','表面品質','鈍化藥劑批號',
-    '訂購量(KG)','訂單合約限重-下限','訂單合約限重-上限','建議套筒厚度',
-    '引帶捲入口銲接重量','引帶捲出口殘餘銲接重量',
-    '降伏強度[(MIN.)規格值]','降伏強度[(MAX.)規格值]',
-    '降伏強度[(MIN.)管制值]','降伏強度[(MAX.)管制值]',
-    '降伏強度[(MIN.)客戶要求]','降伏強度[(MAX.)客戶要求]',
-    '抗拉強度[(MIN.)規格值]','抗拉強度[(MAX.)規格值]',
-    '抗拉強度[(MIN.)管制值]','抗拉強度[(MAX.)管制值]',
-    '抗拉強度[(MIN.)客戶要求]','抗拉強度[(MAX.)客戶要求]',
-    '抗拉/降伏[(MIN.)標準值]','抗拉/降伏[(MAX.)標準值]',
-    '伸長率[(MIN.)規格值]','伸長率[(MAX.)規格值]',
-    '伸長率[(MIN.)管制值]','伸長率[(MAX.)管制值]',
-    '伸長率[(MIN.)客戶要求]','伸長率[(MAX.)客戶要求]',
-    '硬度[(MIN.)規格值]','硬度[(MAX.)規格值]',
-    '硬度[(MIN.)管制值]','硬度[(MAX.)管制值]',
-    '硬度[(MIN.)客戶要求]','硬度[(MAX.)客戶要求]',
-    '硬化指數[N值]',
 }
 numeric_cols = filtered_df.select_dtypes(include=['number']).columns.tolist()
 available_params = [c for c in numeric_cols if c not in _EXCLUDE]
@@ -451,16 +247,10 @@ if not available_params:
     st.warning("⚠️ 找不到可分析的數值欄位，請確認上傳的檔案內容。")
     st.stop()
 
+
 # ══════════════════════════════════════════════════════
 #  參數選擇
 # ══════════════════════════════════════════════════════
-st.markdown("""
-<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
-  <div style="width:3px;height:18px;background:#0ea5e9;border-radius:2px;"></div>
-  <span style="font-size:15px;font-weight:700;color:#0f172a;letter-spacing:.5px;">📊 分析指標</span>
-  <span style="font-size:12px;color:#94a3b8;margin-left:2px;">— 所有圖表與計算皆以此欄位為基準</span>
-</div>
-""", unsafe_allow_html=True)
 selected_param = st.selectbox(
     "🔍 選擇分析參數",
     available_params,
@@ -512,7 +302,7 @@ st.markdown(f"""
   </div>
 </div>""", unsafe_allow_html=True)
 
-# ── 指標卡片 ───────────────────────────────────────
+# ── 5 指標卡片（統一字體）───────────────────────────
 abnormal_pct = abnormal_count / len(plot_df) * 100 if len(plot_df) > 0 else 0
 yield_bar    = min(yield_rate, 100)
 
@@ -549,7 +339,7 @@ _ab_bg     = "#fffafa" if abnormal_count > 0 else "#fff"
 _ab_border = "#fecaca" if abnormal_count > 0 else "#e2e8f0"
 _ab_left   = "#ef4444" if abnormal_count > 0 else "#0ea5e9"
 _ab_numclr = "#ef4444" if abnormal_count > 0 else "#0f172a"
-_ab_sub    = f"↑ {abnormal_pct:.1f}%" if abnormal_count > 0 else "✓ 無異常"
+_ab_sub    = f'↑ {abnormal_pct:.1f}%' if abnormal_count > 0 else "✓ 無異常"
 _ab_subclr = "#ef4444" if abnormal_count > 0 else "#10b981"
 
 c4.markdown(f"""
@@ -565,58 +355,6 @@ st.markdown("<div style='margin-top:8px;'></div>", unsafe_allow_html=True)
 st.markdown("---")
 
 # ══════════════════════════════════════════════════════
-#  全域規格設定（趨勢圖與製程能力分析共用）
-# ══════════════════════════════════════════════════════
-st.markdown("""
-<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
-  <div style="width:3px;height:18px;background:#ef4444;border-radius:2px;"></div>
-  <span style="font-size:15px;font-weight:700;color:#0f172a;letter-spacing:.5px;">規格設定</span>
-  <span style="font-size:12px;color:#94a3b8;margin-left:2px;">— 趨勢圖與製程能力分析共用</span>
-</div>
-""", unsafe_allow_html=True)
-
-_gs1, _gs2, _gs3, _gs4 = st.columns([2, 2, 2, 2])
-with _gs1:
-    st.markdown("<div style='font-size:13px;font-weight:600;color:#475569;margin-bottom:3px;'>📐 規格類型</div>", unsafe_allow_html=True)
-    spec_type = st.selectbox(
-        "",
-        ["雙邊 (LSL & USL)", "單邊上限 (USL only)", "單邊下限 (LSL only)", "僅目標值 (Target only)"],
-        key=f"spc_spectype_{file_key}",
-        label_visibility="collapsed"
-    )
-
-is_both        = "雙邊" in spec_type
-is_upper       = "上限" in spec_type
-is_lower       = "下限" in spec_type
-is_target_only = "僅目標值" in spec_type
-
-with _gs2:
-    st.markdown("<div style='font-size:13px;font-weight:600;color:#475569;margin-bottom:3px;'>📉 LSL　規格下限</div>", unsafe_allow_html=True)
-    lsl2 = st.number_input(
-        "", value=float(avg_val - 4 * std_val),
-        key=f"spc_lsl_{selected_param}",
-        disabled=is_upper or is_target_only,
-        format="%.3f", label_visibility="collapsed"
-    )
-with _gs3:
-    st.markdown("<div style='font-size:13px;font-weight:600;color:#475569;margin-bottom:3px;'>📈 USL　規格上限</div>", unsafe_allow_html=True)
-    usl2 = st.number_input(
-        "", value=float(avg_val + 4 * std_val),
-        key=f"spc_usl_{selected_param}",
-        disabled=is_lower or is_target_only,
-        format="%.3f", label_visibility="collapsed"
-    )
-with _gs4:
-    st.markdown("<div style='font-size:13px;font-weight:600;color:#475569;margin-bottom:3px;'>🎯 目標值</div>", unsafe_allow_html=True)
-    target2 = st.number_input(
-        "", value=float(avg_val),
-        key=f"spc_target_{selected_param}",
-        format="%.3f", label_visibility="collapsed"
-    )
-
-st.markdown("<div style='margin-bottom:12px;'></div>", unsafe_allow_html=True)
-
-# ══════════════════════════════════════════════════════
 #  主分頁
 # ══════════════════════════════════════════════════════
 tab1, tab2 = st.tabs(["📊 數據總覽 & 趨勢分析", "📐 製程能力分析 (Ca · Cp · Cpk)"])
@@ -630,221 +368,159 @@ with tab1:
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
         <div style="width:4px;height:22px;background:#0ea5e9;border-radius:2px;"></div>
         <span style="font-size:20px;font-weight:700;color:#0f172a;">生產順序異常監控圖</span>
-        <span style="font-size:13px;color:#64748b;margin-left:4px;">SPC 規格上下限 (USL / LSL)</span>
+        <span style="font-size:13px;color:#64748b;margin-left:4px;">SPC ±3σ 管制界限</span>
     </div>
     """, unsafe_allow_html=True)
 
     months_list = sorted(plot_df['生產年月'].unique().tolist(), key=str) \
                   if '生產年月' in plot_df.columns else []
 
-    hl_key = "hl_month_" + file_key + "_" + selected_param
+    hl_key = f"hl_month_{file_key}_{selected_param}"
     if hl_key not in st.session_state:
         st.session_state[hl_key] = months_list[-1] if months_list else "全部"
 
-    month_palette = px.colors.qualitative.Bold
-
-    # ── session state 初始化 ──────────────────────────
-    _show_all_key = "spc_show_all_" + file_key + "_" + selected_param
-    _sel_pts_key  = "spc_sel_pts_"  + file_key + "_" + selected_param
-    if _sel_pts_key not in st.session_state:
-        st.session_state[_sel_pts_key] = set()
-
-    # ── 單一 Fragment：月份按鈕 + 建圖 + 圖表渲染全部在同一個 fragment ──
-    # 按月份按鈕 → on_click 更新 session_state → 觸發 fragment 級別 rerun
-    # fragment 內重新讀取 session_state 並重建圖表，uirevision 確保 zoom 不重置
-    @st.fragment
-    def _spc_section():
-        import copy
-
-        # ── 月份切換按鈕 ──────────────────────────────
-        def _set_hl(month, key):
-            st.session_state[key] = month
-
-        if months_list:
-            btn_cols = st.columns(len(months_list) + 1)
-            for i, m in enumerate(months_list):
-                is_active = st.session_state[hl_key] == m
-                btn_cols[i].button(m, key="hl_btn_" + file_key + "_" + selected_param + "_" + m,
-                                   type="primary" if is_active else "secondary",
-                                   on_click=_set_hl, args=(m, hl_key))
-            is_all = st.session_state[hl_key] == "全部"
-            btn_cols[-1].button("全部", key="hl_btn_all_" + file_key + "_" + selected_param,
-                                type="primary" if is_all else "secondary",
-                                on_click=_set_hl, args=("全部", hl_key))
-
-        # ── 讀取當前月份（fragment rerun 時已含最新 on_click 結果）──
-        selected_month = st.session_state.get(hl_key, "全部")
-        x_col = "產出鋼捲號碼" if "產出鋼捲號碼" in plot_df.columns else None
-
-        # ── 在 fragment 內建圖，確保每次都反映最新 selected_month ──
-        fig_line = go.Figure()
-        month_palette = px.colors.qualitative.Bold
-
-        # ── 月份色帶背景 ──────────────────────────────
-        if months_list and x_col:
-            band_colors = ["rgba(186,230,253,0.65)", "rgba(255,255,255,0)"]
-            for i, month in enumerate(months_list):
-                m_df = plot_df[plot_df['生產年月'] == month]
-                if m_df.empty:
-                    continue
-                x_vals = m_df[x_col].tolist()
-                x0, x1 = x_vals[0], x_vals[-1]
-                fig_line.add_vrect(x0=x0, x1=x1, fillcolor=band_colors[i % 2],
-                                   line_width=0, layer="below")
-                if i > 0:
-                    fig_line.add_vline(x=x0, line_color="#cbd5e1",
-                                       line_width=1, line_dash="dot")
-                is_active = (selected_month == month or selected_month == "全部")
-                fig_line.add_annotation(
-                    x=x_vals[len(x_vals)//2], y=1.0, yref="paper",
-                    text="<b>" + month + "</b>" if is_active and selected_month == month else month,
-                    font=dict(color="#0ea5e9" if selected_month == month else "#94a3b8",
-                              size=12),
-                    showarrow=False, yanchor="bottom", xanchor="center"
-                )
-
-        for i, month in enumerate(months_list if months_list else ["全部"]):
-            m_df = plot_df[plot_df['生產年月'] == month] if months_list else plot_df
-            if m_df.empty:
-                continue
-            x_data = m_df[x_col] if x_col else m_df.index
-            is_highlighted = (selected_month == "全部") or (selected_month == month)
-            opacity = 1.0 if is_highlighted else 0.12
-            color   = month_palette[i % len(month_palette)]
-
-            if '生產日期' in m_df.columns:
-                custom = m_df['生產日期'].astype(str).tolist()
-                hover = "<b>鋼捲號碼：%{x}</b><br>數值：%{y:.3f}<br>日期：%{customdata}<extra></extra>"
-            else:
-                custom = None
-                hover = "<b>鋼捲號碼：%{x}</b><br>數值：%{y:.3f}<extra></extra>"
-
-            fig_line.add_trace(go.Scatter(
-                x=x_data, y=m_df[selected_param],
-                mode='lines+markers', name=month,
-                line=dict(color=color, width=2.5 if is_highlighted else 1),
-                marker=dict(size=7 if is_highlighted else 4, color=color, opacity=opacity),
-                opacity=opacity, connectgaps=True,
-                customdata=custom, hovertemplate=hover
-            ))
-
-        if '試驗等級' in plot_df.columns:
-            ab_df = plot_df[is_7b]
-            if not ab_df.empty:
-                x_ab = ab_df[x_col] if x_col else ab_df.index
-                if '生產日期' in ab_df.columns:
-                    ab_custom = ab_df['生產日期'].astype(str).tolist()
-                    ab_hover = "<b>鋼捲號碼：%{x}</b><br>7B 異常：%{y:.3f}<br>日期：%{customdata}<extra></extra>"
-                else:
-                    ab_custom = None
-                    ab_hover = "<b>鋼捲號碼：%{x}</b><br>7B 異常：%{y:.3f}<extra></extra>"
-                fig_line.add_trace(go.Scatter(
-                    x=x_ab, y=ab_df[selected_param],
-                    mode='markers', name='異常 (7B)',
-                    marker=dict(color='#FFD700', size=14, symbol='circle',
-                                line=dict(color='#1e293b', width=1.5)),
-                    customdata=ab_custom, hovertemplate=ab_hover
-                ))
-
-        # ── 管制帶背景 & 規格線 ──────────────────────
-        fig_line.add_hrect(y0=lsl2, y1=usl2, fillcolor="rgba(14,165,233,0.04)", line_width=0)
-
-        fig_line.add_hline(y=avg_val, line_dash="dash", line_color=CHART_AVG, line_width=1.8,
-                           annotation_text="均值 " + f"{avg_val:.3f}",
-                           annotation_position="bottom right",
-                           annotation_font=dict(color=CHART_AVG, size=13))
-        fig_line.add_hline(y=target2, line_dash="dashdot", line_color="#8b5cf6", line_width=1.5,
-                           annotation_text="目標  " + f"{target2:.3f}",
-                           annotation_position="top left",
-                           annotation_font=dict(color="#8b5cf6", size=13))
-        if not is_lower and not is_target_only:
-            fig_line.add_hline(y=usl2, line_dash="dot", line_color=CHART_UCL, line_width=1.5,
-                               annotation_text="USL  " + f"{usl2:.3f}",
-                               annotation_position="top right",
-                               annotation_font=dict(color=CHART_UCL, size=13))
-        if not is_upper and not is_target_only:
-            fig_line.add_hline(y=lsl2, line_dash="dot", line_color=CHART_UCL, line_width=1.5,
-                               annotation_text="LSL  " + f"{lsl2:.3f}",
-                               annotation_position="bottom right",
-                               annotation_font=dict(color=CHART_UCL, size=13))
-
-        fig_line.update_xaxes(showticklabels=False,
-                              title_text="生產順序（依照時間 / 鋼捲號碼）",
-                              title_font=dict(size=14))
-        fig_line.update_layout(
-            template="simple_white",
-            plot_bgcolor=CHART_BG, paper_bgcolor=CHART_BG,
-            title=dict(text="【" + selected_param + "】 SPC 趨勢管制圖",
-                       font=dict(color=CHART_TEXT, size=17), x=0),
-            height=500, hovermode="closest",
-            uirevision="lock_" + file_key + "_" + selected_param,
-            font=dict(color=CHART_TEXT, size=14),
-            xaxis=dict(showticklabels=False, showgrid=False, showline=False, zeroline=False,
-                       title=dict(text="生產順序（依照時間 / 鋼捲號碼）",
-                                  font=dict(color="#64748b", size=14))),
-            yaxis=dict(gridcolor=CHART_GRID, tickfont=dict(color=CHART_TEXT, size=14),
-                       linecolor=CHART_AXIS, showgrid=True),
-            legend=dict(bgcolor=CHART_BG, bordercolor=CHART_GRID, borderwidth=1,
-                        font=dict(color=CHART_TEXT, size=13),
-                        orientation="h", yanchor="top", y=-0.12, xanchor="right", x=1.0),
-            margin=dict(t=50, b=80, l=60, r=80)
-        )
-
-        # ── 控制列 ────────────────────────────────────
-        sel_pts: set = st.session_state.get(_sel_pts_key, set())
-        _c1, _c2, _ = st.columns([2, 2, 6])
-        show_all = _c1.toggle("🔢 全部顯示數值", value=False, key=_show_all_key)
-        if _c2.button("🗑️ 清除已選標籤", key="clr_" + _sel_pts_key):
-            st.session_state[_sel_pts_key] = set()
-            sel_pts = set()
-
-        # ── 加入 annotation（只加需要顯示的點）──────
-        fig = copy.deepcopy(fig_line)
-        for _, row in plot_df.iterrows():
-            x_id = str(row[x_col]) if x_col and x_col in plot_df.columns else str(row.name)
-            y_v  = row[selected_param]
-            if pd.isna(y_v):
-                continue
-            if show_all or x_id in sel_pts:
-                fig.add_annotation(
-                    x=x_id, y=float(y_v),
-                    text=f"<b>{y_v:.2f}</b>",
-                    showarrow=False, yshift=13,
-                    font=dict(size=10, color="#0f172a"),
-                    bgcolor="rgba(255,255,255,0.85)",
-                    bordercolor="#94a3b8", borderwidth=1, borderpad=2,
-                )
-
-        # ── 渲染圖表；on_select="rerun" → 點擊時只重跑此 fragment ──
-        event = st.plotly_chart(
-            fig, use_container_width=True,
-            on_select="rerun",
-            selection_mode="points",
-            key="spc_chart_" + _sel_pts_key
-        )
-
-        # ── 處理點擊事件 ──────────────────────────────
-        clicked_pts = (event or {}).get("selection", {}).get("points", [])
-        if clicked_pts:
-            new_sel = set(sel_pts)
-            for pt in clicked_pts:
-                cx = str(pt.get("x", ""))
-                if not cx:
-                    continue
-                if cx in new_sel:
-                    new_sel.discard(cx)
-                else:
-                    new_sel.add(cx)
-            st.session_state[_sel_pts_key] = new_sel
+    if months_list:
+        btn_cols = st.columns(len(months_list) + 1)
+        for i, m in enumerate(months_list):
+            is_active = st.session_state[hl_key] == m
+            if btn_cols[i].button(m, key=f"hl_btn_{file_key}_{selected_param}_{m}",
+                                   type="primary" if is_active else "secondary"):
+                st.session_state[hl_key] = m
+                st.rerun()
+        is_all = st.session_state[hl_key] == "全部"
+        if btn_cols[-1].button("全部", key=f"hl_btn_all_{file_key}_{selected_param}",
+                                type="primary" if is_all else "secondary"):
+            st.session_state[hl_key] = "全部"
             st.rerun()
 
-        if sel_pts and not show_all:
-            st.caption(
-                f"💡 已標註 {len(sel_pts)} 個點位　｜　"
-                "再次點擊同一點可取消　｜　按「清除已選標籤」全部移除"
+    selected_month = st.session_state.get(hl_key, "全部")
+    x_col = "產出鋼捲號碼" if "產出鋼捲號碼" in plot_df.columns else None
+
+    fig_line = go.Figure()
+    month_palette = px.colors.qualitative.Bold
+
+    # ── 月份色帶背景 ────────────────────────────────
+    if months_list and x_col:
+        band_colors = ["rgba(186,230,253,0.65)", "rgba(255,255,255,0)"]
+        for i, month in enumerate(months_list):
+            m_df = plot_df[plot_df['生產年月'] == month]
+            if m_df.empty:
+                continue
+            x_vals = m_df[x_col].tolist()
+            x0, x1 = x_vals[0], x_vals[-1]
+            fig_line.add_vrect(
+                x0=x0, x1=x1,
+                fillcolor=band_colors[i % 2],
+                line_width=0, layer="below"
+            )
+            # 月份分隔虛線（除第一個月）
+            if i > 0:
+                fig_line.add_vline(
+                    x=x0, line_color="#cbd5e1",
+                    line_width=1, line_dash="dot"
+                )
+            # 月份標籤（頂部）
+            is_active = (selected_month == month or selected_month == "全部")
+            fig_line.add_annotation(
+                x=x_vals[len(x_vals)//2],
+                y=1.0, yref="paper",
+                text=f"<b>{month}</b>" if is_active and selected_month == month else month,
+                font=dict(
+                    color="#0ea5e9" if selected_month == month else "#94a3b8",
+                    size=12,
+                    weight=700 if selected_month == month else 400
+                ),
+                showarrow=False, yanchor="bottom", xanchor="center"
             )
 
-    _spc_section()
+    for i, month in enumerate(months_list if months_list else ["全部"]):
+        m_df = plot_df[plot_df['生產年月'] == month] if months_list else plot_df
+        if m_df.empty:
+            continue
+        x_data = m_df[x_col] if x_col else m_df.index
+        is_highlighted = (selected_month == "全部") or (selected_month == month)
+        opacity = 1.0 if is_highlighted else 0.12
+        color   = month_palette[i % len(month_palette)]
+
+        # hover 加入日期資訊
+        if '生產日期' in m_df.columns:
+            custom = m_df['生產日期'].astype(str).tolist()
+            hover = "<b>鋼捲號碼：%{x}</b><br>數值：%{y:.3f}<br>日期：%{customdata}<extra></extra>"
+        else:
+            custom = None
+            hover = "<b>鋼捲號碼：%{x}</b><br>數值：%{y:.3f}<extra></extra>"
+
+        fig_line.add_trace(go.Scatter(
+            x=x_data, y=m_df[selected_param],
+            mode='lines+markers', name=month,
+            line=dict(color=color, width=2.5 if is_highlighted else 1),
+            marker=dict(size=7 if is_highlighted else 4, color=color, opacity=opacity),
+            opacity=opacity, connectgaps=True,
+            customdata=custom,
+            hovertemplate=hover
+        ))
+
+    if '試驗等級' in plot_df.columns:
+        ab_df = plot_df[is_7b]
+        if not ab_df.empty:
+            x_ab = ab_df[x_col] if x_col else ab_df.index
+            if '生產日期' in ab_df.columns:
+                ab_custom = ab_df['生產日期'].astype(str).tolist()
+                ab_hover = "<b>鋼捲號碼：%{x}</b><br>7B 異常：%{y:.3f}<br>日期：%{customdata}<extra></extra>"
+            else:
+                ab_custom = None
+                ab_hover = "<b>鋼捲號碼：%{x}</b><br>7B 異常：%{y:.3f}<extra></extra>"
+            fig_line.add_trace(go.Scatter(
+                x=x_ab, y=ab_df[selected_param],
+                mode='markers', name='異常 (7B)',
+                marker=dict(color='#FFD700', size=14, symbol='circle',
+                            line=dict(color='#1e293b', width=1.5)),
+                customdata=ab_custom,
+                hovertemplate=ab_hover
+            ))
+
+    ucl = avg_val + 3 * std_val
+    lcl = avg_val - 3 * std_val
+
+    # 管制帶背景
+    fig_line.add_hrect(y0=lcl, y1=ucl, fillcolor="rgba(14,165,233,0.04)",
+                       line_width=0)
+
+    fig_line.add_hline(y=avg_val, line_dash="dash", line_color=CHART_AVG, line_width=1.8,
+                       annotation_text=f"均值 {avg_val:.3f}", annotation_position="bottom right",
+                       annotation_font=dict(color=CHART_AVG, size=13))
+    fig_line.add_hline(y=ucl, line_dash="dot", line_color=CHART_UCL, line_width=1.5,
+                       annotation_text=f"+3σ  {ucl:.3f}", annotation_position="top right",
+                       annotation_font=dict(color=CHART_UCL, size=13))
+    fig_line.add_hline(y=lcl, line_dash="dot", line_color=CHART_UCL, line_width=1.5,
+                       annotation_text=f"−3σ  {lcl:.3f}", annotation_position="bottom right",
+                       annotation_font=dict(color=CHART_UCL, size=13))
+
+    fig_line.update_xaxes(showticklabels=False, title_text="生產順序（依照時間 / 鋼捲號碼）",
+                          title_font=dict(size=14))
+    fig_line.update_layout(
+        template="simple_white",
+        plot_bgcolor=CHART_BG, paper_bgcolor=CHART_BG,
+        title=dict(text=f"【{selected_param}】 SPC 趨勢管制圖",
+                   font=dict(color=CHART_TEXT, size=17), x=0),
+        height=500, hovermode="closest",
+        font=dict(color=CHART_TEXT, size=14),
+        xaxis=dict(
+            showticklabels=False,
+            showgrid=False,
+            showline=False,
+            zeroline=False,
+            title=dict(text="生產順序（依照時間 / 鋼捲號碼）",
+                       font=dict(color="#64748b", size=14))
+        ),
+        yaxis=dict(gridcolor=CHART_GRID, tickfont=dict(color=CHART_TEXT, size=14),
+                   linecolor=CHART_AXIS, showgrid=True),
+        legend=dict(bgcolor=CHART_BG, bordercolor=CHART_GRID, borderwidth=1,
+                    font=dict(color=CHART_TEXT, size=13),
+                    orientation="h", yanchor="top", y=-0.12, xanchor="right", x=1.0),
+        margin=dict(t=50, b=80, l=60, r=80)
+    )
+    st.plotly_chart(fig_line, use_container_width=True)
 
     if abnormal_count > 0:
         st.warning(f"⚠️ 趨勢圖中共標示了 **{abnormal_count} 顆** 7B 異常鋼捲（黃色點），請重點追蹤。")
@@ -865,17 +541,16 @@ with tab1:
     fig_box = px.box(
         plot_df, x="比對群組", y=selected_param, color="比對群組",
         color_discrete_map=group_palette,
-        title="【" + selected_param + "】 群組箱型圖對比",
+        title=f"【{selected_param}】 群組箱型圖對比",
         points="all", template="simple_white"
     )
     fig_box.add_hline(y=avg_val, line_dash="dash", line_color=CHART_AVG, line_width=1.8,
-                      annotation_text="均值: " + f"{avg_val:.3f}",
+                      annotation_text=f"均值: {avg_val:.3f}",
                       annotation_font=dict(color=CHART_AVG, size=13))
     fig_box.update_layout(
         template="simple_white",
         plot_bgcolor=CHART_BG, paper_bgcolor=CHART_BG,
         height=500, showlegend=False,
-        uirevision=selected_param,
         font=dict(color=CHART_TEXT, size=14),
         title=dict(font=dict(color=CHART_TEXT, size=17)),
         xaxis=dict(title=dict(text="群組分類", font=dict(color="#64748b", size=14)),
@@ -920,70 +595,105 @@ with tab2:
     spc_max    = float(spc_data.max())
     spc_cv     = spc_std / spc_mean * 100 if spc_mean != 0 else 0
 
-    # ── 設定區：左欄 Bins/精度 / 右欄 toggle ─────────
+    # ── 設定區：兩張卡片並排 ────────────────────────
     set_col1, set_col2 = st.columns(2)
 
     with set_col1:
         st.markdown("""
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
-          <div style="width:3px;height:18px;background:#0ea5e9;border-radius:2px;"></div>
+        <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:18px 20px;margin-bottom:2px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;">
+          <div style="width:3px;height:18px;background:#0ea5e9;"></div>
           <span style="font-size:15px;font-weight:700;color:#0f172a;letter-spacing:.5px;">顯示設定</span>
         </div>
         """, unsafe_allow_html=True)
+
+        spec_type = st.selectbox(
+            "📐 規格類型",
+            ["雙邊 (LSL & USL)", "單邊上限 (USL only)", "單邊下限 (LSL only)"],
+            key=f"spc_spectype_{file_key}"
+        )
+
         b1, b2 = st.columns(2)
         with b1:
             st.markdown("<div style='font-size:15px;font-weight:600;color:#475569;margin-bottom:3px;'>組距 Bins</div>", unsafe_allow_html=True)
             spc_bins = st.slider("", min_value=5, max_value=30, value=12,
-                                 key="spc_bins_" + selected_param, label_visibility="collapsed")
+                                 key=f"spc_bins_{selected_param}", label_visibility="collapsed")
         with b2:
             st.markdown("<div style='font-size:14px;font-weight:600;color:#475569;margin-bottom:3px;'>小數位數</div>", unsafe_allow_html=True)
             spc_prec = st.slider("", min_value=0, max_value=6, value=3,
-                                 key="spc_prec_" + selected_param, label_visibility="collapsed")
+                                 key=f"spc_prec_{selected_param}", label_visibility="collapsed")
+
+        st.markdown("<div style='display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px;'>", unsafe_allow_html=True)
+        tg1, tg2 = st.columns(2)
+        tg3, tg4 = st.columns(2)
+        show_mean2   = tg1.toggle("平均值線", value=True,  key=f"spc_mean_{selected_param}")
+        show_curve2  = tg2.toggle("常態曲線", value=True,  key=f"spc_curve_{selected_param}")
+        show_median2 = tg3.toggle("中位數線", value=False, key=f"spc_med_{selected_param}")
+        show_target2 = tg4.toggle("目標值線", value=True,  key=f"spc_tgt_{selected_param}")
+        st.markdown("</div>", unsafe_allow_html=True)
 
     with set_col2:
         st.markdown("""
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
-          <div style="width:3px;height:18px;background:#0ea5e9;border-radius:2px;"></div>
-          <span style="font-size:15px;font-weight:700;color:#0f172a;letter-spacing:.5px;">線條顯示</span>
+        <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:18px 20px;margin-bottom:2px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;">
+          <div style="width:3px;height:18px;background:#ef4444;"></div>
+          <span style="font-size:15px;font-weight:700;color:#0f172a;letter-spacing:.5px;">規格設定</span>
         </div>
         """, unsafe_allow_html=True)
-        tg1, tg2 = st.columns(2)
-        tg3, tg4 = st.columns(2)
-        show_mean2   = tg1.toggle("平均值線", value=True,  key="spc_mean_" + selected_param)
-        show_curve2  = tg2.toggle("常態曲線", value=True,  key="spc_curve_" + selected_param)
-        show_median2 = tg3.toggle("中位數線", value=False, key="spc_med_" + selected_param)
-        show_target2 = tg4.toggle("目標值線", value=True,  key="spc_tgt_" + selected_param)
+
+        is_both  = "雙邊" in spec_type
+        is_upper = "上限" in spec_type
+        is_lower = "下限" in spec_type
+
+        # LSL
+        st.markdown("""<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+          <span style="font-size:15px;font-weight:700;color:#1e293b;">LSL　規格下限</span>
+          <span style="font-size:12px;background:#fee2e2;color:#991b1b;border-radius:4px;padding:2px 10px;font-weight:700;">下限</span>
+        </div>""", unsafe_allow_html=True)
+        lsl2 = st.number_input("", value=float(spc_mean - 4*spc_std),
+            key=f"spc_lsl_{selected_param}", disabled=is_upper,
+            format="%.3f", label_visibility="collapsed")
+
+        st.markdown("<div style='margin-top:4px;'>", unsafe_allow_html=True)
+        st.markdown("""<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+          <span style="font-size:15px;font-weight:700;color:#1e293b;">USL　規格上限</span>
+          <span style="font-size:12px;background:#fee2e2;color:#991b1b;border-radius:4px;padding:2px 10px;font-weight:700;">上限</span>
+        </div>""", unsafe_allow_html=True)
+        usl2 = st.number_input("", value=float(spc_mean + 4*spc_std),
+            key=f"spc_usl_{selected_param}", disabled=is_lower,
+            format="%.3f", label_visibility="collapsed")
+
+        st.markdown("<div style='margin-top:4px;'>", unsafe_allow_html=True)
+        st.markdown("""<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+          <span style="font-size:15px;font-weight:700;color:#1e293b;">目標值</span>
+          <span style="font-size:12px;background:#ede9fe;color:#5b21b6;border-radius:4px;padding:2px 10px;font-weight:700;">目標</span>
+        </div>""", unsafe_allow_html=True)
+        target2 = st.number_input("", value=float(spc_mean),
+            key=f"spc_target_{selected_param}",
+            format="%.3f", label_visibility="collapsed")
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── 計算 ─────────────────────────────────────────
-    if is_target_only:
-        ca2      = None
-        cp2      = 0.0
-        cpk2     = 0.0
-        out_usl2 = 0
-        out_lsl2 = 0
+        # ── 計算 ─────────────────────────────────────────
+    if is_both and (usl2 - lsl2) != 0:
+        spec_mid = (usl2 + lsl2) / 2          # 規格中心，與目標值完全無關
+        ca2 = (spc_mean - spec_mid) / ((usl2 - lsl2) / 2) * 100
     else:
-        if is_both and (usl2 - lsl2) != 0:
-            spec_mid = (usl2 + lsl2) / 2
-            ca2 = (spc_mean - spec_mid) / ((usl2 - lsl2) / 2) * 100
-        else:
-            ca2 = None
+        ca2 = None
 
-        if spc_std > 0:
-            if is_both:    cp2 = (usl2 - lsl2) / (6 * spc_std)
-            elif is_upper: cp2 = (usl2 - spc_mean) / (3 * spc_std)
-            else:          cp2 = (spc_mean - lsl2) / (3 * spc_std)
-        else:
-            cp2 = 0.0
+    if spc_std > 0:
+        if is_both:    cp2 = (usl2 - lsl2) / (6 * spc_std)
+        elif is_upper: cp2 = (usl2 - spc_mean) / (3 * spc_std)
+        else:          cp2 = (spc_mean - lsl2) / (3 * spc_std)
+    else:
+        cp2 = 0.0
 
-        cpk2 = cp2 * (1 - abs(ca2) / 100) if (is_both and ca2 is not None) else cp2
+    cpk2 = cp2 * (1 - abs(ca2) / 100) if (is_both and ca2 is not None) else cp2
 
-        out_usl2 = int((spc_data > usl2).sum()) if not is_lower else 0
-        out_lsl2 = int((spc_data < lsl2).sum()) if not is_upper else 0
-
-    in2    = spc_n - out_usl2 - out_lsl2
-    yield2 = in2 / spc_n * 100
+    out_usl2 = int((spc_data > usl2).sum()) if not is_lower else 0
+    out_lsl2 = int((spc_data < lsl2).sum()) if not is_upper else 0
+    in2      = spc_n - out_usl2 - out_lsl2
+    yield2   = in2 / spc_n * 100
 
     def _grade_ca(v):
         if v is None: return "—", "#64748b", "需雙邊規格"
@@ -1001,18 +711,19 @@ with tab2:
         if v >= 0.67: return "C",  "#f97316", "能力不足"
         return             "D",  "#ef4444", "能力極差"
 
-    ca_g, ca_c, ca_d     = _grade_ca(ca2)
-    cp_g, cp_c, cp_d     = _grade_cp(cp2)
-    cpk_g, cpk_c, cpk_d  = _grade_cp(cpk2)
+    ca_g, ca_c, ca_d   = _grade_ca(ca2)
+    cp_g, cp_c, cp_d   = _grade_cp(cp2)
+    cpk_g, cpk_c, cpk_d = _grade_cp(cpk2)
 
     def _light_bg(color):
+        """根據等級顏色回傳淡色背景"""
         m = {
-            "#059669": "#d1fae5",
-            "#10b981": "#d1fae5",
-            "#f59e0b": "#fef9c3",
-            "#f97316": "#ffedd5",
-            "#ef4444": "#fee2e2",
-            "#64748b": "#f1f5f9",
+            "#059669": "#d1fae5",  # A+ 淡綠
+            "#10b981": "#d1fae5",  # A  淡綠
+            "#f59e0b": "#fef9c3",  # B  淡黃
+            "#f97316": "#ffedd5",  # C  淡橙
+            "#ef4444": "#fee2e2",  # D  淡紅
+            "#64748b": "#f1f5f9",  # N/A 淡灰
         }
         return m.get(color, "#f8fafc")
 
@@ -1062,7 +773,7 @@ with tab2:
       <div style="font-size:15px;font-weight:700;color:{ca_c};letter-spacing:1px;
           text-transform:uppercase;margin-bottom:10px;">Ca（準確度）</div>
       <div style="font-size:42px;font-weight:800;color:{ca_c};line-height:1.1;margin-bottom:10px;">
-          {"N/A" if ca2 is None else f"{abs(ca2):.2f}%"}</div>
+          {("N/A" if ca2 is None else f"{abs(ca2):.2f}%")}</div>
       <div style="display:inline-block;font-size:14px;font-weight:700;color:#fff;
           background:{ca_c};border-radius:20px;padding:4px 18px;">{ca_g}　{ca_d}</div>
     </div>""", unsafe_allow_html=True)
@@ -1089,20 +800,17 @@ with tab2:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── Row 3：60/40 主圖表區 ────────────────────────
+        # ── Row 3：60/40 主圖表區 ────────────────────────
     col_main, col_side = st.columns([1.5, 1])
 
     with col_main:
+        # 直方圖（主視覺 60%）
         arr    = spc_data.values
         bins   = int(spc_bins)
         p      = int(spc_prec)
         pad    = spc_std * 1.5
-        if is_target_only:
-            amin = arr.min() - pad
-            amax = arr.max() + pad
-        else:
-            amin = min(arr.min(), lsl2) - pad
-            amax = max(arr.max(), usl2) + pad
+        amin   = min(arr.min(), lsl2) - pad
+        amax   = max(arr.max(), usl2) + pad
         step_h = (amax - amin) / bins
         edges  = [amin + i * step_h for i in range(bins + 1)]
         counts = [0] * bins
@@ -1110,11 +818,12 @@ with tab2:
             idx = max(0, min(bins-1, int((v - amin) / step_h)))
             counts[idx] += 1
 
+        # 柱子顏色（加深 + 外框）
         bar_colors, bar_borders = [], []
         for i in range(bins):
             out = False
-            if (is_both or is_lower) and not is_target_only: out = out or (edges[i+1] <= lsl2)
-            if (is_both or is_upper) and not is_target_only: out = out or (edges[i]   >= usl2)
+            if is_both or is_lower: out = out or (edges[i+1] <= lsl2)
+            if is_both or is_upper: out = out or (edges[i]   >= usl2)
             if out:
                 bar_colors.append("rgba(239,68,68,0.80)")
                 bar_borders.append("#dc2626")
@@ -1126,9 +835,12 @@ with tab2:
         fig_h = go.Figure()
         fig_h.add_trace(go.Bar(
             x=bar_x, y=counts, width=[step_h*0.92]*bins,
-            marker=dict(color=bar_colors, line=dict(width=1.2, color=bar_borders)),
+            marker=dict(
+                color=bar_colors,
+                line=dict(width=1.2, color=bar_borders)
+            ),
             name="分布",
-            hovertemplate="區間: %{x:." + str(p) + "f}<br>次數: %{y}<extra></extra>"
+            hovertemplate=f"區間: %{{x:.{p}f}}<br>次數: %{{y}}<extra></extra>"
         ))
 
         if spc_std > 0 and show_curve2:
@@ -1139,58 +851,73 @@ with tab2:
                 line=dict(color="#1e293b", width=2.5), name='常態曲線'
             ))
 
-        y_top = max(counts) if counts else 1
+        # ── 規格線：線條畫在圖內，標籤顯示在圖表下方說明區 ──
+        y_max = max(counts) if counts else 1
 
+        # 右上角統計資訊框（報告用）- 統一字體，避免截圖時被裁切
         stats_text = (
-            "<b>樣本數　" + f"{spc_n:,}</b>" +
-            "　｜　平均值　" + f"{spc_mean:.{p}f}" +
-            "　｜　標準差　" + f"{spc_std:.{p}f}"
+            f"<b>樣本數　{spc_n:,}</b>"
+            f"　｜　平均值　{spc_mean:.{p}f}"
+            f"　｜　標準差　{spc_std:.{p}f}"
         )
         fig_h.add_annotation(
             xref="paper", yref="paper", x=0.98, y=0.97,
             text=stats_text,
-            font=dict(color="#1e293b", size=13),
+            font=dict(color="#1e293b", size=13, weight=700),
             bgcolor="#f8fafc", bordercolor="#cbd5e1", borderwidth=1.5,
             borderpad=8, showarrow=False, align="left",
             xanchor="right", yanchor="top"
         )
 
+        # 規格線：scatter 垂直線 + 頂部永久標籤框，hover 自動浮到最上層
+        y_top = max(counts) if counts else 1
+        label_y = y_top * 1.06   # 標籤固定位置（柱頂上方）
+
+        # 線條設定：(x值, 顏色, dash樣式, 線寬, 標籤文字, 背景色)
+        # 用 paper 座標讓線延伸到圖表頂部，標籤固定在最上方
         lines_to_draw = []
-        if (is_both or is_lower) and not is_target_only:
-            lines_to_draw.append((lsl2, "#ef4444", "solid", 2.5,
-                                  "LSL " + f"{lsl2:.{p}f}", "#fee2e2"))
+        if is_both or is_lower:
+            lines_to_draw.append((lsl2,      "#ef4444", "solid",   2.5, f"LSL {lsl2:.{p}f}",      "#fee2e2"))
         if show_mean2:
-            lines_to_draw.append((spc_mean, "#059669", "dot", 2.5,
-                                  "平均 " + f"{spc_mean:.{p}f}", "#d1fae5"))
+            lines_to_draw.append((spc_mean,  "#059669", "dot",     2.5, f"平均 {spc_mean:.{p}f}",  "#d1fae5"))
         if show_target2:
-            lines_to_draw.append((target2, "#7c3aed", "dash", 2.5,
-                                  "目標值 " + f"{target2:.{p}f}", "#ede9fe"))
+            lines_to_draw.append((target2,   "#7c3aed", "dash",    2.5, f"目標值 {target2:.{p}f}", "#ede9fe"))
         if show_median2:
-            lines_to_draw.append((spc_median, "#0284c7", "dashdot", 2.5,
-                                  "中位 " + f"{spc_median:.{p}f}", "#e0f2fe"))
-        if (is_both or is_upper) and not is_target_only:
-            lines_to_draw.append((usl2, "#ef4444", "solid", 2.5,
-                                  "USL " + f"{usl2:.{p}f}", "#fee2e2"))
+            lines_to_draw.append((spc_median,"#0284c7", "dashdot", 2.5, f"中位 {spc_median:.{p}f}","#e0f2fe"))
+        if is_both or is_upper:
+            lines_to_draw.append((usl2,      "#ef4444", "solid",   2.5, f"USL {usl2:.{p}f}",      "#fee2e2"))
 
         for x_val, color, dash, width, label, bg in lines_to_draw:
+            # 密集多點讓整條線都可以 hover
             n_pts = 300
             ys = [y_top * 1.38 * i / (n_pts - 1) for i in range(n_pts)]
             fig_h.add_trace(go.Scatter(
-                x=[x_val] * n_pts, y=ys, mode="lines",
+                x=[x_val] * n_pts,
+                y=ys,
+                mode="lines",
                 line=dict(color=color, width=width, dash=dash),
                 name=label,
-                hovertemplate="<b>" + label + "</b><extra></extra>",
-                hoverlabel=dict(bgcolor=color, font=dict(color="#fff", size=14),
-                                bordercolor=color),
+                hovertemplate=f"<b>{label}</b><extra></extra>",
+                hoverlabel=dict(
+                    bgcolor=color,
+                    font=dict(color="#fff", size=14),
+                    bordercolor=color
+                ),
                 showlegend=False
             ))
+            # 標籤固定在圖表最頂端（paper 座標）
             fig_h.add_annotation(
-                x=x_val, y=1.01, xref="x", yref="paper",
-                text="<b>" + label + "</b>",
+                x=x_val, y=1.01,
+                xref="x", yref="paper",
+                text=f"<b>{label}</b>",
                 font=dict(color=color, size=11),
-                bgcolor=bg, bordercolor=color, borderwidth=1.5, borderpad=4,
-                showarrow=False, yanchor="bottom", xanchor="center"
+                bgcolor=bg,
+                bordercolor=color, borderwidth=1.5, borderpad=4,
+                showarrow=False,
+                yanchor="bottom", xanchor="center"
             )
+
+
 
         fig_h.update_layout(
             template="simple_white",
@@ -1209,12 +936,12 @@ with tab2:
                 range=[0, y_top * 1.42]
             ),
             showlegend=False,
-            uirevision=f"{selected_param}_{lsl2}_{usl2}_{spc_bins}",
             bargap=0.04, margin=dict(t=70, b=55, l=65, r=30)
         )
         st.plotly_chart(fig_h, use_container_width=True)
 
     with col_side:
+        # 良品率大數字卡（右上）
         yield_color = "#10b981" if yield2 >= 99 else ("#f59e0b" if yield2 >= 95 else "#ef4444")
         st.markdown(f"""
         <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;
@@ -1235,6 +962,7 @@ with tab2:
           </div>
         </div>""", unsafe_allow_html=True)
 
+        # 等級說明卡（右下）
         st.markdown("""
         <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:18px;">
           <div style="font-size:14px;color:#64748b;font-weight:700;text-transform:uppercase;
